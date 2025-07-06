@@ -142,7 +142,7 @@
 
         // --- CORE LOGIC ---
         
-        // Simulates fetching the fare matrix CSV and parsing it.
+        // Fetching the fare matrix CSV and parse it.
         async function loadFareData() {
             const uploadLabel = document.getElementById('upload-label');
             const loadingState = document.getElementById('loading-state');
@@ -154,19 +154,30 @@
                 const response = await fetch('./wmata_fare_matrix_full_2025.7.5.csv');
                 const csvText = await response.text();
 
-                const lines = csvText.trim().split('\n').slice(1);
-                for (const line of lines) {
-                    const [origin, destination, peak, offpeak] = line.split(',');
-                    if (origin && destination) {
-                        const key = [origin.trim(), destination.trim()].sort().join('-');
-                        railFares[key] = {
-                            peak: parseFloat(peak),
-                            offpeak: parseFloat(offpeak)
-                        };
+                const lines = csvText.trim().split('\n');
+                const headerRow = lines[0].replace(/"/g, '').split(',');
+                const destinationStations = headerRow.slice(1).map(h => h.replace(/ (Peak|Off-Peak)$/, ''));
+
+
+                for (let i = 1; i < lines.length; i++) {
+                    const dataRow = lines[i].replace(/"/g, '').split(',');
+                    const originStation = dataRow[0];
+                    railFares[originStation] = {};
+
+                    for (let j = 1; j < dataRow.length; j += 2) {
+                        const destStationName = destinationStations[j-1];
+                        const peakFare = parseFloat(dataRow[j]);
+                        const offPeakFare = parseFloat(dataRow[j + 1]);
+                        if (!isNaN(peakFare) && !isNaN(offPeakFare)) {
+                           railFares[originStation][destStationName] = { peak: peakFare, offpeak: offPeakFare };
+                        }
                     }
                 }
+
                 isDataReady = true;
-                console.log("Fare data loaded successfully.");
+                console.log(`Fare data loaded successfully. ${Object.keys(railFares).length}`);
+                const allFareKeys = Object.keys(railFares);
+
             } catch (error) {
                 showError("Failed to load fare data. Please try again later.");
                 console.error("Fare data loading error:", error);
@@ -186,33 +197,115 @@
             return false;
         }
 
+        //WMATA uses shorthand station names on the Detailed Usage Report than what they return in the Station API
+        //This object is used to be able to map between the two names
+        const stationNameMap = {
+            "Metro Center N": "Metro Center (RD)",
+            "Metro Center S": "Metro Center (RD)",
+            "Metro Center E": "Metro Center (RD)",
+            "Metro Center W": "Metro Center (RD)",
+            "Silver Spring S": "Silver Spring (RD)",
+            "NoMa Gallaudet North": "NoMa-Gallaudet U (RD)",
+            "Dupont Circle N": "Dupont Circle (RD)",
+            "Fed Center SW": "Federal Center SW (BL;OR;SV)",
+            "Huntington S": "Huntington (YL)",
+            "NoMa Gallaudet South": "NoMa-Gallaudet U (RD)",
+            "Foggy Bottom": "Foggy Bottom-GWU (BL;OR;SV)",
+            "Rhode Island Ave": "Rhode Island Ave-Brentwood (RD)",
+            "Potomac Yard": "Potomac Yard (BL;YL)",
+            "L'Enfant Plza E":"L'Enfant Plaza (BL;OR;SV)",
+            "L'Enfant Plza N":"L'Enfant Plaza (BL;OR;SV)",
+            "L'Enfant Plza W":"L'Enfant Plaza (BL;OR;SV)",
+            "Judiciary Sq E":"Judiciary Square (RD)",
+            "Judiciary Sq W":"Judiciary Square (RD)",
+            "Gal Pl-Chntwn N":"Gallery Pl-Chinatown (RD)",
+            "Gal Plc-Chntn E":"Gallery Pl-Chinatown (RD)",
+            "Gal Plc-Chntn W":"Gallery Pl-Chinatown (RD)",
+            "Dulles Airport":"Washington Dulles International Airport (SV)",
+            "Nat Airport N":"Ronald Reagan Washington National Airport (BL;YL)",
+            "Nat Airport S":"Ronald Reagan Washington National Airport (BL;YL)",
+            "Shaw-Hwrd U N":"Shaw-Howard U (GR;YL)",
+            "Shaw-Hwrd U S":"Shaw-Howard U (GR;YL)",
+            "Dupont Circle S":"Dupont Circle (RD)",
+            "Frgut N NE":"Farragut North (RD)",
+            "Farragut N NW":"Farragut North (RD)",
+            "Frgut N SE":"Farragut North (RD)",
+            "Frgut W E":"Farragut West (BL;OR;SV)",
+            "Frgut W W":"Farragut West (BL;OR;SV)",
+            "Union Stn S":"Union Station (RD)",
+            "Union Stn N":"Union Station (RD)",
+            "U St-Cardozo W":"U Street/African-Amer Civil War Memorial/Cardozo (GR;YL)",
+            "U St-Cardozo E":"U Street/African-Amer Civil War Memorial/Cardozo (GR;YL)",
+            "Arch-Navy Mem":"Archives-Navy Memorial-Penn Quarter (GR;YL)",
+            "N Bethesda":"North Bethesda (RD)",
+            "Frndshp Hgts N":"Friendship Heights (RD)",
+            "Ga Ave-Petworth":"Georgia Ave-Petworth (GR;YL)"
+            // Add other mappings here as they are discovered
+        };
+
+        function findMatchingStation(stationName) {
+            // Priority 1: Check the explicit mapping for known differences.
+            if (stationNameMap[stationName]) {
+                return stationNameMap[stationName];
+            }
+            // Priority 2: Check for a direct, exact match in the fare data keys.
+            if (railFares[stationName]) {
+                return stationName;
+            }
+
+            // Normalize the input station name by removing directional suffixes (e.g., " S", " N")
+            const normalizedInput = stationName.replace(/ (N|S|E|W)$/, '').trim();
+
+            // Priority 3: Fallback to find a key that *starts with* the station name.
+            for (const key in railFares) {
+                if (key.startsWith(normalizedInput)) {
+                    return key;
+                }
+            }
+            return null; // No match found
+        }
+
         function getTripFare(entry, exit, dateTime) {
             if (!entry || !exit) return 2.00; // Bus fare
-            const key = [entry, exit].sort().join('-');
-            const fareInfo = railFares[key];
-            if (!fareInfo) {
-                console.warn(`Fare not found for: ${entry}-${exit}. Using default.`);
-                return 2.25; // Default minimum rail fare
+
+            const originKey = findMatchingStation(entry);
+            const destKey = findMatchingStation(exit);
+
+
+            if (originKey && destKey && railFares[originKey] && railFares[originKey][destKey]) {
+                 const fareInfo = railFares[originKey][destKey];
+                 return isPeak(dateTime) ? fareInfo.peak : fareInfo.offpeak;
             }
-            return isPeak(dateTime) ? fareInfo.peak : fareInfo.offpeak;
+            
+            console.warn(`Fare not found for: ${entry} (${originKey}) -> ${exit} (${destKey}). Using default.`);
+            return 2.25; // Default minimum rail fare
         }
 
         function parseCsv(text) {
             const lines = text.trim().split('\n').slice(1);
             let trips = [];
             let detectedPass = null;
+            let minDate = null;
+            let maxDate = null;
 
             for (const line of lines) {
                 const columns = line.replace(/"/g, '').split(',');
                 if (columns.length < 9) continue;
 
                 const description = columns[2].trim();
+                const currentDate = new Date(columns[1].trim());
+
+                if (!isNaN(currentDate)) {
+                    if (!minDate || currentDate < minDate) minDate = currentDate;
+                    if (!maxDate || currentDate > maxDate) maxDate = currentDate;
+                }
+
                 if (description.toLowerCase() === 'exit') {
                     const trip = {
-                        time: new Date(columns[1].trim()),
+                        time: currentDate,
                         entry: columns[4].trim(),
                         exit: columns[5].trim(),
-                        fare: 0 // Will be calculated later
+                        fare: 0
                     };
                     trip.fare = getTripFare(trip.entry, trip.exit, trip.time);
                     trips.push(trip);
@@ -223,17 +316,38 @@
                     detectedPass = product;
                 }
             }
-            return { trips, detectedPass };
+
+            let duration = 0;
+            if (minDate && maxDate) {
+                const diffTime = Math.abs(maxDate - minDate);
+                duration = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+            }
+
+            return { trips, detectedPass, duration };
         }
 
-        function recommendPass(paygCost) {
+        //TODO: This needs to be updated to be smarter
+        //TODO: I think it needs to take into account the difference between what the pass allows and what the fare is, and keep a running tally of that
+        //TODO: For example, if the pass is unlimited $2.25 but the fare is $4.25, the difference is $2
+        function recommendPass(paygCost, duration) {
             let bestPass = null;
             let maxSavings = 0;
             for (const [passName, passCost] of Object.entries(passOptions)) {
-                const savings = paygCost - passCost;
-                if (savings > maxSavings) {
-                    maxSavings = savings;
-                    bestPass = { name: passName, cost: passCost, savings };
+                const isMonthly = passName.includes('Monthly');
+                const is7Day = passName.includes('7-Day');
+                const is3Day = passName.includes('3-Day');
+                const is1Day = passName.includes('1-Day');
+
+                if (duration > 7 && !isMonthly) continue;
+                if (duration > 3 && (is1Day || is3Day)) continue;
+                if (duration > 1 && is1Day) continue;
+
+                if (paygCost > passCost) {
+                    const savings = paygCost - passCost;
+                    if (savings > maxSavings) {
+                        maxSavings = savings;
+                        bestPass = { name: passName, cost: passCost, savings };
+                    }
                 }
             }
             return bestPass;
@@ -268,7 +382,7 @@
         
         function processRideData(csvText) {
             errorBox.classList.add('hidden');
-            const { trips, detectedPass } = parseCsv(csvText);
+            const { trips, detectedPass, duration } = parseCsv(csvText);
 
             if (trips.length === 0) {
                 showError("No valid 'Exit' trips found in the CSV file.");
@@ -280,10 +394,10 @@
             if (detectedPass) {
                 const passCost = passOptions[detectedPass] || 0;
                 const savings = paygCost - passCost;
-                displaySavings(paygCost, passCost, savings, trips, detectedPass);
+                displaySavings(paygCost, passCost, savings, trips, detectedPass, duration);
             } else {
-                const recommendation = recommendPass(paygCost);
-                displayRecommendation(paygCost, recommendation, trips);
+                const recommendation = recommendPass(paygCost, duration);
+                displayRecommendation(paygCost, recommendation, trips, duration);
             }
 
             resultsContainer.classList.remove('hidden');
@@ -291,7 +405,7 @@
             advancedDetailsContainer.classList.remove('hidden');
         }
 
-        function displaySavings(paygCost, passCost, savings, trips, passName) {
+        function displaySavings(paygCost, passCost, savings, trips, passName, duration) {
             resultsContainer.innerHTML = `
                 <h3 class="text-2xl font-semibold text-center mb-4">Your Savings Analysis</h3>
                 <p class="text-center text-sm text-gray-500 mb-4">Pass Detected: <strong>${passName}</strong></p>
@@ -310,21 +424,21 @@
                     </div>
                 </div>
                 <div class="mt-4 text-sm text-gray-500">
-                    <p>Based on <strong>${trips.length}</strong> rail trips.</p>
+                    <p>Based on <strong>${trips.length}</strong> rail trips over ~<strong>${duration}</strong> days.</p>
                 </div>
                 <button onclick="toggleAdvanced()" class="w-full mt-4 text-sm text-blue-600 hover:underline">Show/Hide Advanced Details</button>
             `;
             populateAdvancedDetails(trips);
         }
 
-        function displayRecommendation(paygCost, recommendation, trips) {
+        function displayRecommendation(paygCost, recommendation, trips, duration) {
             let recommendationHTML = `<div class="recommendation-card text-white p-6 rounded-lg text-center shadow-lg"><h4 class="text-xl font-bold">No Pass Detected!</h4><p class="mt-1">Based on your usage, we have a recommendation.</p></div>`;
             if (recommendation) {
                 recommendationHTML += `<div class="mt-4 text-center"><p class="font-semibold text-lg">You should get the:</p><p class="font-bold text-2xl text-blue-700 my-2">${recommendation.name}</p><div class="flex justify-between items-center p-4 bg-green-100 rounded-lg text-xl mt-4"><span class="font-bold">Potential Savings:</span><span class="font-bold text-green-700">$${recommendation.savings.toFixed(2)}</span></div></div>`;
             } else {
                  recommendationHTML += `<div class="mt-4 text-center p-4 bg-gray-100 rounded-lg"><p class="font-semibold text-lg">Pay-As-You-Go is your best option for this period.</p></div>`;
             }
-            resultsContainer.innerHTML = `<h3 class="text-2xl font-semibold text-center mb-4">Pass Recommendation</h3><div class="flex justify-between items-center p-3 bg-red-100 rounded-lg mb-4"><span class="font-medium">Your Pay-As-You-Go Cost:</span><span class="font-bold text-red-700">$${paygCost.toFixed(2)}</span></div>${recommendationHTML}<div class="mt-4 text-sm text-gray-500"><p>Based on <strong>${trips.length}</strong> rail trips.</p></div><button onclick="toggleAdvanced()" class="w-full mt-4 text-sm text-blue-600 hover:underline">Show/Hide Advanced Details</button>`;
+            resultsContainer.innerHTML = `<h3 class="text-2xl font-semibold text-center mb-4">Pass Recommendation</h3><div class="flex justify-between items-center p-3 bg-red-100 rounded-lg mb-4"><span class="font-medium">Your Pay-As-You-Go Cost:</span><span class="font-bold text-red-700">$${paygCost.toFixed(2)}</span></div>${recommendationHTML}<div class="mt-4 text-sm text-gray-500"><p>Based on <strong>${trips.length}</strong> rail trips over ~<strong>${duration}</strong> days.</p></div><button onclick="toggleAdvanced()" class="w-full mt-4 text-sm text-blue-600 hover:underline">Show/Hide Advanced Details</button>`;
             populateAdvancedDetails(trips);
         }
 
